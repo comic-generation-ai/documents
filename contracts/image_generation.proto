@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package image_generation;
+
+service ImageGenerationService {
+  // Yêu cầu sinh ảnh bất đồng bộ, trả về ngay lập tức Task ID
+  rpc GenerateImageAsync (GenerateImageRequest) returns (GenerateImageResponse);
+  
+  // Kiểm tra trạng thái của một Task sinh ảnh
+  rpc GetTaskStatus (TaskStatusRequest) returns (TaskStatusResponse);
+
+  // Hủy một Task sinh ảnh đang chờ hoặc đang chạy
+  rpc CancelTask (CancelRequest) returns (CancelResponse);
+
+  // Kiểm tra sức khỏe dịch vụ gRPC
+  rpc CheckHealth (CheckHealthRequest) returns (CheckHealthResponse);
+
+  // Kiểm tra sức khỏe của GPU
+  rpc CheckGpuHealth (CheckGpuHealthRequest) returns (CheckGpuHealthResponse);
+
+  // Giải phóng cache của GPU
+  rpc ClearGpuCache (ClearGpuCacheRequest) returns (ClearGpuCacheResponse);
+
+  // Kiểm tra sức khỏe của CPU
+  rpc CheckCpuHealth (CheckCpuHealthRequest) returns (CheckCpuHealthResponse);
+}
+
+
+enum ImageGenerationStatus {
+  PENDING = 0;
+  PROCESSING = 1;
+  SUCCESS = 2;
+  FAILED = 3;
+}
+
+message GenerateImageRequest {
+  string reference_image_url = 1; // Ảnh tham chiếu
+  string prompt = 2;              // Prompt tiếng Anh đã được dịch và thêm style
+  int32 width = 3;                // Chiều rộng ảnh (mặc định cho SDXL là 1024)
+  int32 height = 4;               // Chiều cao ảnh (mặc định cho SDXL là 1024)
+  int32 seed = 5;                 // Seed để kiểm soát tính ngẫu nhiên (-1 cho ngẫu nhiên)
+  int32 num_inference_steps = 6;  // Số bước khử nhiễu (4-8 cho SDXL Turbo)
+  string caption_text = 7;        // Văn bản lời thoại tiếng Việt chèn vào khung truyện (legacy)
+  repeated SpeechBuble speech_bubbles = 8; // Danh sách bong bóng thoại động
+}
+
+message GenerateImageResponse {
+  string task_id = 1;             // ID duy nhất của Task sinh ảnh được đẩy vào queue
+  ImageGenerationStatus status = 2;              // Trạng thái ban đầu (ví dụ: PENDING)
+}
+
+message TaskStatusRequest {
+  string task_id = 1;
+
+}
+
+message TaskStatusResponse {
+  string task_id = 1;
+  ImageGenerationStatus status = 2;              // PENDING, PROCESSING, SUCCESS, FAILED
+  string minio_url = 3;           // Presigned URL trỏ tới ảnh trên MinIO (nếu SUCCESS)
+  string error_message = 4;       // Thông báo lỗi nếu thất bại
+}
+
+message CancelRequest{
+  string task_id = 1;
+}
+message CancelResponse{
+  string task_id = 1;
+  ImageGenerationStatus status = 2;
+}
+
+message CheckHealthRequest{}
+
+message CheckHealthResponse{
+  bool is_alive = 1;
+  map<string, string> versions = 2;
+}
+
+
+message CheckGpuHealthRequest{}
+
+message CheckGpuHealthResponse{
+  bool is_healthy = 1;
+  string gpu_name = 2;
+  string gpu_memory_usage = 3;
+  string gpu_memory_free = 4;
+  string gpu_memory_total = 5;
+  string gpu_memory_used = 6;
+}
+
+message ClearGpuCacheRequest{}
+
+message ClearGpuCacheResponse{
+  bool is_cleared = 1;
+}
+
+message SpeechBuble {
+  string text = 1;
+  string bubble_type = 2; // SPEECH, THOUGHT, SCREAM
+  float x_pos = 3;
+  float y_pos = 4;
+}
+
+message CheckCpuHealthRequest{}
+
+message CheckCpuHealthResponse{
+  bool is_healthy = 1;
+  string cpu_name = 2;
+  string cpu_memory_usage = 3;
+  string cpu_memory_free = 4;
+  string cpu_memory_total = 5;
+  string cpu_memory_used = 6;
+}

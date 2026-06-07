@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package story_generation;
+
+// orchestrator-ai ↔ story-ai (internal gRPC)
+
+service StoryGenerationService {
+  rpc GenerateStory (GenerateStoryRequest) returns (GenerateStoryResponse);
+  rpc CheckHealth (CheckHealthRequest) returns (CheckHealthResponse);
+}
+
+message GenerateStoryRequest {
+  string job_id = 1;           // Correlation ID từ orchestrator
+  string summary = 2;            // Tóm tắt truyện từ user (tiếng Việt)
+  string style = 3;              // optional: "children", "action", ...
+  int32 num_panels = 4;          // Mặc định 4 khung
+  string language = 5;           // "vi" — caption tiếng Việt
+}
+
+message CharacterProfile {
+  string character_id = 1;       // vd: "char_main"
+  string name = 2;
+  string description_en = 3;     // Mô tả cố định cho diffusion prompt
+  string appearance_tags = 4;    // vd: "young boy, red shirt, short black hair"
+}
+
+message PanelScript {
+  int32 index = 1;               // 0..3
+  string caption_vi = 2;         // Lời thoại hiển thị trên bubble (FE overlay)
+  string prompt_en = 3;          // Prompt diffusion (đã có style suffix)
+  string scene_description = 4;  // Mô tả cảnh cho debug/log
+  repeated string character_ids = 5;
+}
+
+message GenerateStoryResponse {
+  string job_id = 1;
+  repeated PanelScript panels = 2;
+  map<string, CharacterProfile> characters = 3;
+  string story_title = 4;        // optional
+}
+
+message CheckHealthRequest {}
+
+message CheckHealthResponse {
+  bool is_alive = 1;
+  string model_id = 2;           // vd: "llama-3.2-3b"
+  map<string, string> versions = 3;
+}

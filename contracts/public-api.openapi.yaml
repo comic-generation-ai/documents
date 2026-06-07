@@ -1,0 +1,227 @@
+openapi: 3.0.3
+info:
+  title: ComicSystem Public API
+  description: |
+    API công khai duy nhất mà `fe-comic` được phép gọi.
+    Mọi logic AI nằm sau `be-comic` — client không biết orchestrator/story/image.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+
+tags:
+  - name: comics
+  - name: jobs
+  - name: auth
+
+paths:
+  /comics/generate:
+    post:
+      tags: [comics, jobs]
+      summary: Tạo job sinh truyện tranh từ tóm tắt
+      operationId: createComicGenerationJob
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateComicRequest'
+      responses:
+        '202':
+          description: Job đã được tạo — client poll status
+          headers:
+            X-Request-Id:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreatedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /comics/jobs/{jobId}:
+    get:
+      tags: [jobs]
+      summary: Lấy trạng thái job sinh truyện
+      operationId: getComicJobStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Trạng thái hiện tại
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComicJobStatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /comics/jobs/{jobId}/cancel:
+    post:
+      tags: [jobs]
+      summary: Hủy job đang chạy
+      operationId: cancelComicJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelJobResponse'
+
+  /health:
+    get:
+      tags: [comics]
+      summary: Health check (không cần auth)
+      responses:
+        '200':
+          description: Service healthy
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    GenerateComicRequest:
+      type: object
+      required: [summary]
+      properties:
+        summary:
+          type: string
+          minLength: 10
+          maxLength: 2000
+          description: Tóm tắt truyện ngắn (tiếng Việt)
+        style:
+          type: string
+          enum: [children, action, comedy, default]
+          default: children
+        numPanels:
+          type: integer
+          minimum: 4
+          maximum: 4
+          default: 4
+
+    JobCreatedResponse:
+      type: object
+      required: [jobId, status]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING]
+        message:
+          type: string
+          example: Job queued. Poll GET /comics/jobs/{jobId}
+
+    ComicJobStatusResponse:
+      type: object
+      required: [jobId, status, progress]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - PENDING
+            - STORY_GENERATING
+            - IMAGE_GENERATING
+            - COMPOSING
+            - SUCCESS
+            - FAILED
+            - CANCELLED
+        progress:
+          type: object
+          properties:
+            current:
+              type: integer
+            total:
+              type: integer
+            step:
+              type: string
+        panels:
+          type: array
+          items:
+            $ref: '#/components/schemas/PanelResult'
+        pageImageUrl:
+          type: string
+          format: uri
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+
+    PanelResult:
+      type: object
+      properties:
+        index:
+          type: integer
+        captionVi:
+          type: string
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, SUCCESS, FAILED]
+
+    CancelJobResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [CANCELLED]
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid JWT
+    NotFound:
+      description: Job not found
+    RateLimited:
+      description: Too many requests

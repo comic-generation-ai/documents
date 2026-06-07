@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package orchestrator;
+
+// be-comic ↔ orchestrator-ai (internal gRPC)
+// be-comic là client duy nhất gọi orchestrator từ application layer
+
+service ComicOrchestratorService {
+  rpc StartComicGeneration (StartComicGenerationRequest) returns (StartComicGenerationResponse);
+  rpc GetComicJobStatus (GetComicJobStatusRequest) returns (GetComicJobStatusResponse);
+  rpc CancelComicJob (CancelComicJobRequest) returns (CancelComicJobResponse);
+  rpc CheckHealth (CheckHealthRequest) returns (CheckHealthResponse);
+}
+
+enum ComicJobStatus {
+  COMIC_JOB_UNKNOWN = 0;
+  COMIC_JOB_PENDING = 1;
+  COMIC_JOB_STORY_GENERATING = 2;
+  COMIC_JOB_STORY_READY = 3;
+  COMIC_JOB_IMAGE_GENERATING = 4;   // đang vẽ panel (progress trong metadata)
+  COMIC_JOB_COMPOSING = 5;
+  COMIC_JOB_SUCCESS = 6;
+  COMIC_JOB_FAILED = 7;
+  COMIC_JOB_CANCELLED = 8;
+}
+
+message StartComicGenerationRequest {
+  string job_id = 1;              // UUID do be-comic tạo
+  string user_id = 2;
+  string summary = 3;
+  string style = 4;
+  int32 num_panels = 5;           // default 4
+  string request_id = 6;            // X-Request-Id từ FE (trace)
+}
+
+message StartComicGenerationResponse {
+  string job_id = 1;
+  ComicJobStatus status = 2;
+}
+
+message PanelResult {
+  int32 index = 1;
+  string caption_vi = 2;
+  string image_url = 3;             // MinIO presigned URL (khi xong)
+  string prompt_en = 4;
+  int32 seed = 5;
+  string status = 6;                // PENDING | PROCESSING | SUCCESS | FAILED
+  string error_message = 7;
+}
+
+message GetComicJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetComicJobStatusResponse {
+  string job_id = 1;
+  ComicJobStatus status = 2;
+  int32 progress_current = 3;     // 0..4 (số panel đã xong)
+  int32 progress_total = 4;       // 4
+  string page_image_url = 5;      // URL trang 2x2 ghép (khi SUCCESS)
+  repeated PanelResult panels = 6;
+  string error_message = 7;
+  string current_step = 8;        // human-readable: "Generating panel 2/4"
+}
+
+message CancelComicJobRequest {
+  string job_id = 1;
+}
+
+message CancelComicJobResponse {
+  string job_id = 1;
+  ComicJobStatus status = 2;
+}
+
+message CheckHealthRequest {}
+
+message CheckHealthResponse {
+  bool is_alive = 1;
+  map<string, string> dependencies = 2;  // story-ai: ok, image-ai: ok
+}
