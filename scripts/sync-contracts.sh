@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync shared contracts từ documents/contracts/ sang từng service repo.
-# Chạy sau mỗi lần sửa proto — nhớ bump deployment/VERSIONS.md nếu breaking change.
+# Chạy sau mỗi lần sửa proto
 
 set -euo pipefail
 
