@@ -67,7 +67,7 @@ flowchart TB
 | **fe-comic** | Angular 21 | UI/UX, nhập tóm tắt, hiển thị trang truyện, editor bubble/layout, auth | Đã có UI editor, auth scaffold |
 | **be-comic** | NestJS | API gateway, auth, validation, lưu project/user, quản lý job, không chứa logic AI | Chưa implement (chỉ placeholder) |
 | **orchestrator-ai** | Python / Node (tùy chọn) | Điều phối workflow đa bước: summary → story → 4 panel → 4 ảnh → ghép trang | Chưa implement |
-| **story-ai** | Python + Llama | Nhận tóm tắt → sinh 4 đoạn + prompt tiếng Anh + caption tiếng Việt + mô tả nhân vật | Chỉ có proto draft (comment) |
+| **story-ai** | Python + FastAPI + Llama | Nhận tóm tắt → sinh 4 đoạn + prompt tiếng Anh + caption tiếng Việt + mô tả nhân vật (REST HTTP) | Chưa implement |
 | **image-ai** | Python + gRPC + Celery + SD Turbo | Sinh ảnh từng panel, hậu kỳ Pillow, upload MinIO, cache Redis | **MVP chạy E2E** (1 panel) |
 | **deployment** | Docker Compose | **Repo glue** — 1 `docker-compose.yml` compose full stack từ các repo sibling | Skeleton đã có; wire dần khi từng service sẵn sàng |
 
@@ -88,7 +88,8 @@ flowchart TB
 [3] be-comic gọi orchestrator-ai: StartComicGeneration(summary, job_id)
          │
          ▼
-[4] orchestrator-ai → story-ai (gRPC/HTTP)
+[4] orchestrator-ai → story-ai (REST HTTP / FastAPI)
+    POST /generate
     Input:  { summary, style?, num_panels: 4 }
     Output: {
       panels: [
@@ -201,25 +202,27 @@ Không giải quyết được điểm này thì 4 khung sẽ là 4 cảnh khôn
 
 #### Rủi ro #4 — Contract giữa services chưa rõ
 
-`story-ai/proto/story_generation.proto` đang **comment toàn bộ** và copy nhầm từ image-ai. Cần định nghĩa sớm:
+story-ai dùng **FastAPI (REST HTTP)** thay gRPC — cần định nghĩa OpenAPI contract sớm (`story_generation.openapi.yaml` trong `documents/contracts/`):
 
-```protobuf
-message PanelScript {
-  int32 index = 1;
-  string caption_vi = 2;      // Lời thoại hiển thị trên bubble
-  string prompt_en = 3;       // Prompt cho diffusion model
-  string scene_description = 4;
-  repeated string character_ids = 5;
-}
-
-message GenerateStoryResponse {
-  string job_id = 1;
-  repeated PanelScript panels = 2;
-  map<string, CharacterProfile> characters = 3;
+```json
+// POST /generate  →  200 OK
+{
+  "panels": [
+    {
+      "index": 0,
+      "caption_vi": "Lời thoại hiển thị trên bubble",
+      "prompt_en": "Prompt cho diffusion model",
+      "scene_description": "Mô tả cảnh",
+      "character_ids": ["char_001"]
+    }
+  ],
+  "characters": {
+    "char_001": { "name": "...", "description": "..." }
+  }
 }
 ```
 
-Proto là **hợp đồng** giữa team/service — nên ưu tiên trước khi code logic.
+OpenAPI contract là **hợp đồng** giữa `orchestrator-ai` (client) và `story-ai` (server) — nên ưu tiên trước khi code logic.
 
 #### Rủi ro #5 — Multi-repo (organization + repo riêng từng service)
 
@@ -299,11 +302,12 @@ Công nghệ gợi ý: Python (cùng ecosystem AI) + Redis làm workflow state +
 |-------|-----------|-------|
 | fe-comic ↔ be-comic | REST + WebSocket/SSE | Chuẩn web, dễ debug |
 | be-comic ↔ orchestrator | gRPC hoặc REST | Ít call, cần typed contract |
-| orchestrator ↔ story-ai | gRPC | Structured output, nhanh |
+| orchestrator ↔ story-ai | **REST HTTP (FastAPI)** | Dễ implement, debug; latency LLM vài giây nên HTTP đủ |
 | orchestrator ↔ image-ai | gRPC (đã có) | Async task pattern sẵn |
 | Tất cả ↔ Redis/MinIO | Client SDK | Cache, queue, storage |
 
-**Không dùng REST sync** cho image-ai — đã có gRPC async task pattern, giữ nguyên.
+**Không dùng REST sync** cho image-ai — đã có gRPC async task pattern, giữ nguyên.  
+**story-ai dùng FastAPI** — gọi đồng bộ từ orchestrator (LLM vài giây, không cần async task queue riêng).
 
 ### 6.5 Database schema tối thiểu (be-comic)
 
@@ -429,12 +433,12 @@ GPU worker **không nên** scale cùng pod với NestJS — billing và resource
 | `image-ai/README.md` | Hướng dẫn chạy image-ai |
 | `image-ai/docs/TODO.md` | Roadmap image-ai (Phase A/B/C) |
 | `image-ai/proto/image_generation.proto` | gRPC contract image service |
-| `story-ai/proto/story_generation.proto` | Proto draft (cần hoàn thiện) |
+| `documents/contracts/story_generation.openapi.yaml` | REST contract story-ai (FastAPI) — thay thế proto |
 | `deployment/docker-compose.yml` | Full stack compose — glue tất cả repo sibling |
 | `documents/MICROSERVICES_GUIDE.md` | Hướng dẫn microservices chuẩn + lộ trình implement |
 | `documents/contracts/` | Proto + OpenAPI — source of truth giữa các service |
 | `deployment/VERSIONS.md` | Compatibility matrix khi release |
-| `documents/scripts/sync-contracts.sh` | Copy proto sang từng service repo |
+| `documents/scripts/sync-contracts.sh` | Copy proto/OpenAPI sang từng service repo |
 | `fe-comic/src/app/features/comic-editor/` | UI editor truyện |
 
 ---

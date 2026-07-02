@@ -12,7 +12,7 @@ Hai người ngồi review 4 file trong `documents/contracts/`:
 
 | File | Cần chốt |
 |------|----------|
-| `story_generation.proto` | 4 panel, `caption_vi`, `prompt_en`, `characters` |
+| `story_generation.openapi.yaml` | POST /generate: 4 panel, `caption_vi`, `prompt_en`, `characters` (FastAPI REST) |
 | `orchestrator.proto` | `StartComicGeneration`, `GetComicJobStatus`, enum status |
 | `image_generation.proto` | Giữ nguyên (image-ai đã implement) |
 | `public-api.openapi.yaml` | `POST /comics/generate`, `GET /comics/jobs/{id}` |
@@ -31,11 +31,11 @@ git push && git push --tags
 
 ### Bước 1 — Tuần này (bạn): orchestrator-ai skeleton
 
-Mục tiêu: gRPC server implement `orchestrator.proto`, **mock story-ai**, gọi **image-ai thật** (1 panel trước).
+Mục tiêu: orchestrator-ai gọi story-ai qua **REST HTTP**, **mock story-ai**, gọi **image-ai thật** (1 panel trước).
 
 ```
 orchestrator StartComicGeneration
-  → mock 4 PanelScript (hardcode hoặc đọc từ story_generation shape)
+  → POST http://story-ai/generate  (mock: 4 PanelScript hardcode hoặc đọc từ story_generation shape)
   → gọi image-ai GenerateImageAsync × 1 (rồi × 4)
   → poll GetTaskStatus
   → GetComicJobStatus trả SUCCESS + minio URLs
@@ -61,7 +61,7 @@ Test bằng **curl/Postman** — chưa cần Angular.
 
 ### Bước 3 — Song song (bạn kia)
 
-- `story-ai`: gRPC server trả **mock 4 panels** đúng `story_generation.proto`
+- `story-ai`: FastAPI server trả **mock 4 panels** đúng `story_generation.openapi.yaml` qua `POST /generate`
 - `fe-comic`: chưa cần gấp — đợi be-comic chạy được
 
 ---
@@ -182,15 +182,25 @@ All contracts in sync.
 
 ### B.5 Sau sync — generate code ở từng repo
 
-**Python (orchestrator-ai, story-ai, image-ai):**
+**Python (orchestrator-ai, image-ai):**
 
 ```bash
+# orchestrator-ai
 cd orchestrator-ai
 python -m grpc_tools.protoc \
   -I./proto \
   --python_out=./src/generated \
   --grpc_python_out=./src/generated \
   ./proto/orchestrator.proto
+```
+
+**story-ai (FastAPI) — không dùng protoc, dùng OpenAPI:**
+
+```bash
+# Tạo server từ story_generation.openapi.yaml (hoặc implement thủ công FastAPI)
+cd story-ai
+pip install fastapi uvicorn
+# Implement theo spec trong documents/contracts/story_generation.openapi.yaml
 ```
 
 **NestJS (be-comic)** — gọi orchestrator:
