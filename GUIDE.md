@@ -73,7 +73,7 @@ Test bằng **curl/Postman** — chưa cần Angular.
 | 1 | orchestrator gọi mock story-ai thay hardcode |
 | 2 | orchestrator × 4 panel image-ai |
 | 3 | fe-comic poll be-comic |
-| 4 | story-ai Llama thật |
+| 4 | story-ai LLM thật (OpenRouter, không phải Llama local như plan gốc) |
 
 **Mốc release `v0.2.0`:** `POST /comics/generate` → poll → 4 ảnh hiển thị web.
 
@@ -92,7 +92,7 @@ documents/contracts/     ← SỬA Ở ĐÂY (repo documents)
         ▼
 image-ai/proto/
 orchestrator-ai/proto/
-story-ai/proto/
+story-ai/docs/         ← FastAPI, không dùng protoc — copy OpenAPI thủ công
 be-comic/              ← OpenAPI: copy thủ công hoặc generate types
 ```
 
@@ -149,7 +149,7 @@ Ví dụ: đổi `summary` → `story_summary` trong proto.
 | API web (FE gọi BE) | `public-api.openapi.yaml` | Bạn | Bạn kia (FE) |
 | BE ↔ orchestrator | `orchestrator.proto` | Bạn | — |
 | orchestrator ↔ image | `image_generation.proto` | Bạn | — |
-| orchestrator ↔ story | `story_generation.proto` | Bạn (orchestrator cần) | Bạn kia (story-ai) |
+| orchestrator ↔ story | `story_generation.openapi.yaml` | Bạn (orchestrator cần) | Bạn kia (story-ai) |
 
 **OpenAPI cho be-comic:** copy file vào `be-comic/docs/public-api.openapi.yaml` hoặc dùng `@nestjs/swagger` generate từ code — nhưng **nguồn sự thật vẫn là** `documents/contracts/public-api.openapi.yaml`.
 
@@ -173,10 +173,10 @@ Kết quả đúng:
 
 ```
 OK  image_generation.proto
-OK  story_generation.proto
 OK  orchestrator.proto
 All contracts in sync.
 ```
+(`story_generation.openapi.yaml` không qua script này — copy thủ công, xem B.5)
 
 ---
 
@@ -377,9 +377,10 @@ git push origin feat/orchestrator-saga
 ### C.5 Khi bạn kia merge story-ai — quy trình tích hợp
 
 ```
-1. Bạn kia push story-ai — đảm bảo proto sync từ documents
-2. Bạn chạy check-contracts-sync.sh
-3. orchestrator: đổi từ mock → gọi story-ai gRPC thật
+1. Bạn kia push story-ai — đảm bảo OpenAPI (story_generation.openapi.yaml) khớp
+   documents/contracts/ (copy thủ công, không có script tự động cho REST)
+2. Bạn chạy check-contracts-sync.sh (kiểm tra phần proto — image/orchestrator)
+3. orchestrator: đổi từ mock → gọi story-ai qua REST HTTP thật (không phải gRPC)
 4. Test local: orchestrator + story-ai + image-ai (không cần FE)
 5. Nếu OK → bump orchestrator PATCH tag hoặc đợi stack release
 ```
