@@ -43,16 +43,16 @@
               ┌─────────────────┐
               │ orchestrator-ai │  Saga coordinator — state machine
               │   Redis (state) │
-              └────┬───────┬────┘
-                   │       │
-         gRPC      │       │      gRPC
-    (story.proto)  │       │  (image.proto)
-                   ▼       ▼
-            ┌──────────┐ ┌──────────────┐
-            │ story-ai │ │  image-ai    │
-            │  Llama   │ │ gRPC+Celery  │
-            └──────────┘ │ Redis+MinIO  │
-                         └──────────────┘
+               └────┬───────┬────┘
+                    │       │
+          REST HTTP │       │      gRPC
+      (OpenAPI)     │       │  (image.proto)
+                    ▼       ▼
+             ┌──────────┐ ┌──────────────┐
+             │ story-ai │ │  image-ai    │
+             │ FastAPI  │ │ gRPC+Celery  │
+             │ OpenRouter│ │ Redis+MinIO  │
+             └──────────┘ └──────────────┘
 
          deployment/docker-compose.yml — glue tất cả
          documents/contracts/ — source of truth
@@ -61,10 +61,10 @@
 ### Ai được gọi ai (ma trận phụ thuộc)
 
 | Caller | Được gọi | Cấm gọi |
-|--------|----------|---------|
+|--------|----------|---------| 
 | fe-comic | be-comic | orchestrator, story-ai, image-ai |
 | be-comic | orchestrator-ai | story-ai, image-ai trực tiếp |
-| orchestrator-ai | story-ai, image-ai | be-comic DB, fe-comic |
+| orchestrator-ai | story-ai (REST), image-ai (gRPC) | be-comic DB, fe-comic |
 | story-ai | (không gọi service khác) | image-ai, be-comic |
 | image-ai | MinIO, Redis | story-ai, be-comic |
 
@@ -78,10 +78,10 @@
 
 ```
 documents/contracts/
-├── public-api.openapi.yaml    ← fe ↔ be
-├── orchestrator.proto         ← be ↔ orchestrator
-├── story_generation.proto     ← orchestrator ↔ story
-├── image_generation.proto     ← orchestrator ↔ image
+├── public-api.openapi.yaml         ← fe ↔ be (REST)
+├── orchestrator.proto              ← be ↔ orchestrator (gRPC)
+├── story_generation.openapi.yaml   ← orchestrator ↔ story (REST HTTP / FastAPI)
+├── image_generation.proto          ← orchestrator ↔ image (gRPC)
 └── README.md
 ```
 
@@ -143,7 +143,7 @@ FE header: X-Request-Id: uuid
 |---------|----------|
 | be-comic | `GET /health` |
 | orchestrator-ai | gRPC `CheckHealth` |
-| story-ai | gRPC `CheckHealth` |
+| story-ai | `GET /health` (FastAPI REST) |
 | image-ai | gRPC `CheckHealth` + `CheckGpuHealth` |
 
 ---
@@ -257,18 +257,25 @@ src/
 └── config/
 ```
 
-### story-ai (Python + Llama)
+### story-ai (Python + FastAPI + OpenRouter)
+
+Cấu trúc thật (khác với plan gốc — không dùng Llama local mà gọi OpenRouter API):
 
 ```
 src/
-├── server.py             ← gRPC (story_generation.proto)
-├── llm/
-│   ├── prompt_template.py
-│   └── parser.py         ← LLM output → PanelScript JSON
-└── config/
+├── server.py             ← FastAPI app + endpoint POST /generate (story_generation.openapi.yaml)
+├── config.py             ← API key OpenRouter, model LLM, port
+└── llm/
+    ├── prompt_template.py  ← system prompt cho LLM đóng vai biên kịch comic
+    ├── parser.py           ← làm sạch + validate JSON response bằng Pydantic
+    └── folklore.py         ← ngữ cảnh văn hoá/truyện cổ tích (nếu có)
 ```
 
+**Giao tiếp REST HTTP** — orchestrator gọi `POST /generate`, nhận JSON response.
 **Output bắt buộc structured JSON** — không trả plain text cho orchestrator tự parse.
+**Lưu ý field-name**: output thật hiện dùng `panel_number`/`image_prompt`/`dialogue`/`speaker`,
+khác vocabulary gốc trong contract (`index`/`prompt_en`/`caption_vi`) — orchestrator-ai tự map,
+không yêu cầu story-ai đổi tên field (xem `story-ai/TASKS_FOR_NHAN.md`).
 
 ### image-ai (đã có — giữ nguyên pattern)
 
@@ -301,12 +308,12 @@ documents/
 
 - [x] Tạo `documents/contracts/` (proto + OpenAPI)
 - [x] `deployment/VERSIONS.md`
-- [ ] Copy proto vào từng repo + script `sync-contracts.sh`
+- [ ] Copy proto/OpenAPI vào từng repo + script `sync-contracts.sh`
 - [ ] be-comic: NestJS skeleton + `GET /health` + PostgreSQL migration `generation_jobs`
 - [ ] orchestrator: gRPC server stub + Redis state store
-- [ ] story-ai: gRPC stub trả **mock 4 panels** (chưa cần Llama)
+- [x] story-ai: FastAPI server sinh panel thật qua `POST /generate` (OpenRouter, không phải mock)
 
-**Done khi:** `orchestrator.StartComicGeneration` → mock story → mock image URLs → `GetComicJobStatus` = SUCCESS
+**Done khi:** `orchestrator.StartComicGeneration` → gọi story-ai REST → mock image URLs → `GetComicJobStatus` = SUCCESS
 
 ### Phase 2 — Nối image-ai thật (1 tuần)
 
@@ -316,11 +323,11 @@ documents/
 
 **Done khi:** Tóm tắt → 4 ảnh thật từ MinIO qua API be-comic
 
-### Phase 3 — story-ai Llama (1–2 tuần)
+### Phase 3 — story-ai chất lượng (1–2 tuần)
 
-- [ ] Thay mock bằng Llama inference
-- [ ] Prompt template → `PanelScript[]` + `CharacterProfile`
-- [ ] Validate JSON schema trước khi trả orchestrator
+- [x] LLM inference qua OpenRouter (không phải Llama local như plan gốc) — đã chạy thật
+- [ ] Prompt template → thêm `character_ids` + `CharacterProfile`/character bible (hiện chưa có)
+- [x] Validate JSON schema trước khi trả orchestrator qua REST response (`llm/parser.py`, Pydantic)
 
 ### Phase 4 — fe-comic integration (1 tuần)
 
@@ -330,7 +337,8 @@ documents/
 
 ### Phase 5 — Production hardening
 
-- [ ] Character consistency (IP-Adapter panel 0 → 1,2,3)
+- [x] Character consistency (IP-Adapter panel 0 → 1,2,3) — **code xong trong image-ai, tạm khoá**
+    (chậm trên Mac 8GB, bật lại khi có GPU cloud — xem `image-ai/docs/TODO.md`)
 - [ ] Rate limit trên be-comic
 - [ ] CI mỗi repo + integration test trên deployment
 - [ ] GPU cloud tách worker (optional)
@@ -348,12 +356,14 @@ Dùng checklist này khi bảo vệ:
 
 ### Contract
 - [ ] Proto/OpenAPI trong repo `documents/contracts/`
+- [ ] `story_generation.openapi.yaml` — REST contract cho story-ai (FastAPI)
 - [ ] Mô tả request/response từng bước pipeline
 - [ ] Versioning document trong `VERSIONS.md`
 
 ### Communication
 - [ ] Sync REST chỉ FE ↔ BE
-- [ ] gRPC internal cho AI layer
+- [ ] gRPC internal: be-comic ↔ orchestrator, orchestrator ↔ image-ai
+- [ ] REST HTTP (FastAPI): orchestrator ↔ story-ai
 - [ ] Job async cho image generation
 
 ### Resilience
@@ -395,9 +405,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CONTRACTS="$ROOT/documents/contracts"
 
-cp "$CONTRACTS/image_generation.proto"  "$ROOT/image-ai/proto/"
-cp "$CONTRACTS/story_generation.proto"    "$ROOT/story-ai/proto/"
-cp "$CONTRACTS/orchestrator.proto"        "$ROOT/orchestrator-ai/proto/"
+cp "$CONTRACTS/image_generation.proto"        "$ROOT/image-ai/proto/"
+cp "$CONTRACTS/story_generation.openapi.yaml" "$ROOT/story-ai/docs/"
+cp "$CONTRACTS/orchestrator.proto"            "$ROOT/orchestrator-ai/proto/"
 
 echo "Contracts synced. Bump VERSIONS.md if breaking change."
 ```

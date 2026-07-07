@@ -20,8 +20,7 @@ copy_proto() {
 }
 
 copy_proto "image_generation.proto"  "$ROOT/image-ai/proto"
-copy_proto "story_generation.proto"  "$ROOT/story-ai/proto"
 copy_proto "orchestrator.proto"      "$ROOT/orchestrator-ai/proto"
+# orchestrator cần image proto để gọi image-ai (gRPC client)
+copy_proto "image_generation.proto"  "$ROOT/orchestrator-ai/proto"
 
-echo ""
-echo "Done. Kiểm tra deployment/VERSIONS.md nếu có thay đổi breaking."

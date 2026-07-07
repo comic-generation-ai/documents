@@ -12,12 +12,12 @@ Là file mô tả **service A gửi gì / nhận gì** khi gọi service B. Khô
 ```
 documents/contracts/          ← SỬA Ở ĐÂY
         │
-        │  ./documents/scripts/sync-contracts.sh  (copy proto)
+        │  ./documents/scripts/sync-contracts.sh  (copy proto / OpenAPI)
         ▼
-orchestrator-ai/proto/        ← bạn implement server + client
-image-ai/proto/               ← bạn implement server
+orchestrator-ai/proto/        ← bạn implement server + client (gRPC)
+image-ai/proto/               ← bạn implement server (gRPC)
 be-comic/                     ← bạn implement REST (xem OpenAPI)
-story-ai/proto/               ← bạn kia implement server
+story-ai/                     ← bạn kia implement FastAPI server (xem OpenAPI)
 fe-comic/                     ← bạn kia implement REST client
 ```
 
@@ -28,11 +28,11 @@ fe-comic/                     ← bạn kia implement REST client
 | File | Ai implement **server** | Ai implement **client** | Bạn hay bạn kia |
 |------|-------------------------|-------------------------|-----------------|
 | `public-api.openapi.yaml` | **be-comic** (REST) | **fe-comic** | Bạn / Bạn kia |
-| `orchestrator.proto` | **orchestrator-ai** | **be-comic** | **Bạn** cả hai |
-| `image_generation.proto` | **image-ai** | **orchestrator-ai** | **Bạn** cả hai |
-| `story_generation.proto` | **story-ai** | **orchestrator-ai** | Bạn kia / **Bạn** (client) |
+| `orchestrator.proto` | **orchestrator-ai** (gRPC) | **be-comic** | **Bạn** cả hai |
+| `image_generation.proto` | **image-ai** (gRPC) | **orchestrator-ai** | **Bạn** cả hai |
+| `story_generation.openapi.yaml` | **story-ai** (FastAPI REST) | **orchestrator-ai** | Bạn kia / **Bạn** (client) |
 
-**Quy tắc nhóm bạn:** Bạn **không sửa** `story_generation.proto` tùy tiện — nhắn bạn kia trước. Bạn kia **không sửa** `orchestrator.proto` / `image_generation.proto` — nhắn bạn.
+**Quy tắc nhóm bạn:** Bạn **không sửa** `story_generation.openapi.yaml` tùy tiện — nhắn bạn kia trước. Bạn kia **không sửa** `orchestrator.proto` / `image_generation.proto` — nhắn bạn.
 
 Chỉ **`public-api.openapi.yaml`** cần hai người thống nhất (bạn làm BE, bạn kia làm FE).
 
@@ -45,12 +45,12 @@ fe-comic
   │  POST { summary }                    public-api.openapi.yaml
   ▼
 be-comic
-  │  StartComicGeneration(job_id, summary)   orchestrator.proto
+  │  StartComicGeneration(job_id, summary)   orchestrator.proto (gRPC)
   ▼
 orchestrator-ai
-  │  GenerateStory(summary)                  story_generation.proto
+  │  POST /generate { summary }              story_generation.openapi.yaml (REST HTTP)
   │       → panels[4], characters
-  │  GenerateImageAsync(prompt) × 4          image_generation.proto
+  │  GenerateImageAsync(prompt) × 4          image_generation.proto (gRPC)
   │       → poll GetTaskStatus → minio_url
   ▼
 be-comic → fe-comic
@@ -91,21 +91,22 @@ Response **202** khi tạo job — không chờ AI xong.
 
 ---
 
-### `story_generation.proto` — orchestrator ↔ story-ai
+### `story_generation.openapi.yaml` — orchestrator ↔ story-ai
 
-**Bạn kia implement server** trong `story-ai`:
+**Bạn kia implement server** trong `story-ai` (FastAPI REST):
 
-| RPC | Input | Output |
-|-----|-------|--------|
-| `GenerateStory` | `summary`, `num_panels=4` | `panels[]` + `characters` map |
+| Endpoint | Input | Output |
+|----------|-------|--------|
+| `POST /generate` | `{ summary, num_panels: 4 }` | `{ panels[], characters }` |
+| `GET /health` | — | `{ status: "ok" }` |
 
-Mỗi `PanelScript`:
+Mỗi `PanelScript` trong response:
 
 - `caption_vi` — lời thoại (FE hiển thị bubble)
 - `prompt_en` — gửi sang image-ai
 - `character_ids` — nhân vật trong khung
 
-**Bạn implement client** trong `orchestrator-ai` (gọi story-ai).
+**Bạn implement client** trong `orchestrator-ai` (HTTP request đến story-ai).
 
 ---
 
@@ -162,7 +163,8 @@ source env/bin/activate
 pip install -r requirements.txt
 ./scripts/generate_proto.sh
 
-# story-ai (bạn kia) — tương tự với story_generation.proto
+# story-ai (bạn kia) — FastAPI không dùng protoc; implement theo OpenAPI spec:
+# documents/contracts/story_generation.openapi.yaml
 ```
 
 Cuối cùng sửa code implement cho khớp proto mới, commit repo service lên `main`.
@@ -201,7 +203,7 @@ BẠN sửa (nhắn bạn kia nếu ảnh hưởng FE):
   └── public-api.openapi.yaml
 
 BẠN KIA sửa (nhắn bạn nếu ảnh hưởng orchestrator):
-  └── story_generation.proto
+  └── story_generation.openapi.yaml  (FastAPI REST contract)
 
 HAI NGƯỜI cùng review:
   └── public-api.openapi.yaml  (FE + BE)
