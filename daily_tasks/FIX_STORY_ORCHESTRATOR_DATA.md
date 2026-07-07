@@ -18,7 +18,7 @@ trong khi story-ai vẫn xử lý.
 
 | File | Sửa gì |
 |---|---|
-| `orchestrator-ai/src/config/settings.py` | `STORY_AI_TIMEOUT_SEC` mặc định `90.0` → `240.0` |
+| `orchestrator-ai/src/config/settings.py` | `STORY_AI_TIMEOUT_SEC` mặc định `90.0` → `270.0` |
 | `story-ai/src/server.py` | Thời gian chờ retry rate-limit: mặc định `30s` → `15s`, và chặn trần `wait = min(wait, 20)` để tổng thời gian 3 attempts luôn nằm dưới timeout của orchestrator |
 
 ---
