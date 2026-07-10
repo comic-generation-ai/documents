@@ -4,75 +4,78 @@ info:
   description: |
     API công khai duy nhất mà `fe-comic` được phép gọi.
     Mọi logic AI nằm sau `be-comic` — client không biết orchestrator/story/image.
-  version: 0.1.0
+
+    **v0.2.0 — đồng bộ theo code be-comic thực tế (07/2026):**
+    - Route là `/api/generation-jobs` + `/api/frames` (không phải `/comics/*` như v0.1).
+    - `projectId` là bắt buộc khi tạo job (FK tới COMIC_PROJECT).
+    - Chưa có auth JWT — sẽ thêm `bearerAuth` ở version sau, FE nên viết sẵn interceptor.
+    - Response của GET job hiện trả `{ localJob, liveStatus }` thô — sẽ được chuẩn hóa
+      phẳng ở version sau; các field bên trong panels là ổn định, cứ bám vào đó.
+  version: 0.2.0
 
 servers:
-  - url: http://localhost:8000/api/v1
-    description: Local development
+  - url: http://localhost:3000/api
+    description: |
+      Local development. PORT đặt qua env (khuyên 3000 — default 8000 đụng cổng
+      HTTP health của image-ai). Global prefix là `api/`.
 
 tags:
-  - name: comics
-  - name: jobs
-  - name: auth
+  - name: generation-jobs
+  - name: frames
 
 paths:
-  /comics/generate:
+  /generation-jobs:
     post:
-      tags: [comics, jobs]
+      tags: [generation-jobs]
       summary: Tạo job sinh truyện tranh từ tóm tắt
-      operationId: createComicGenerationJob
-      security:
-        - bearerAuth: []
+      operationId: createGenerationJob
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GenerateComicRequest'
+              $ref: '#/components/schemas/CreateGenerationJobRequest'
       responses:
         '202':
-          description: Job đã được tạo — client poll status
-          headers:
-            X-Request-Id:
-              schema:
-                type: string
+          description: Job đã tạo và đã đẩy sang orchestrator — client poll GET /generation-jobs/{jobId}
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobCreatedResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '429':
-          $ref: '#/components/responses/RateLimited'
+          description: Body sai (thiếu summary, projectId không phải UUID hợp lệ RFC...)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Orchestrator không chạy / lỗi hạ tầng — message dạng
+            "Active pipeline AI error: ..." hoặc "System error: ..." (lỗi DB/FK).
 
-  /comics/jobs/{jobId}:
+  /generation-jobs/{jobId}:
     get:
-      tags: [jobs]
-      summary: Lấy trạng thái job sinh truyện
-      operationId: getComicJobStatus
-      security:
-        - bearerAuth: []
+      tags: [generation-jobs]
+      summary: Lấy trạng thái job (poll mỗi 2-3 giây)
+      operationId: getGenerationJob
       parameters:
         - $ref: '#/components/parameters/JobId'
       responses:
         '200':
-          description: Trạng thái hiện tại
+          description: |
+            Khi job đang chạy: có cả `localJob` (Postgres) và `liveStatus` (orchestrator).
+            Khi job đã kết thúc (COMPLETED/FAILED/CANCELLED): `liveStatus` = null.
+            Khi orchestrator rớt giữa chừng: có thêm field `error` (string).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ComicJobStatusResponse'
+                $ref: '#/components/schemas/JobStatusResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
-
-  /comics/jobs/{jobId}/cancel:
-    post:
-      tags: [jobs]
+          description: Job không tồn tại
+    delete:
+      tags: [generation-jobs]
       summary: Hủy job đang chạy
-      operationId: cancelComicJob
-      security:
-        - bearerAuth: []
+      operationId: cancelGenerationJob
       parameters:
         - $ref: '#/components/parameters/JobId'
       responses:
@@ -80,148 +83,183 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CancelJobResponse'
+                type: object
+                properties:
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [CANCELLED] }
+        '404':
+          description: Job không tồn tại
 
-  /health:
+  /frames:
     get:
-      tags: [comics]
-      summary: Health check (không cần auth)
+      tags: [frames]
+      summary: Lấy toàn bộ frame (panel đã lưu bền) của một truyện
+      description: |
+        Nguồn dữ liệu bền của FE — sau khi job COMPLETED, panels được chốt vào đây
+        (sống độc lập với Redis TTL 24h của orchestrator). Kèm sẵn speech_bubbles
+        cho tính năng bong bóng thoại.
+      operationId: getFramesByProject
+      parameters:
+        - name: projectId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
       responses:
         '200':
-          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Frame'
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-
   parameters:
     JobId:
       name: jobId
       in: path
       required: true
-      schema:
-        type: string
-        format: uuid
+      schema: { type: string, format: uuid }
 
   schemas:
-    GenerateComicRequest:
+    CreateGenerationJobRequest:
       type: object
-      required: [summary]
+      required: [projectId, summary]
       properties:
+        projectId:
+          type: string
+          format: uuid
+          description: Phải là UUID hợp lệ theo RFC (version 1-5) và tồn tại trong COMIC_PROJECT
         summary:
           type: string
-          minLength: 10
-          maxLength: 2000
-          description: Tóm tắt truyện ngắn (tiếng Việt)
+          maxLength: 1000
+          description: Tóm tắt truyện (tiếng Việt)
         style:
           type: string
-          enum: [children, action, comedy, default]
-          default: children
+          default: storybook
+          description: |
+            Khớp preset của image-ai thì kích hoạt style tương ứng:
+            storybook | anime | manga | retro | american_comic.
+            Giá trị khác → image-ai dùng style mặc định (không lỗi).
         numPanels:
           type: integer
-          minimum: 4
-          maximum: 4
+          minimum: 1
+          maximum: 10
           default: 4
 
     JobCreatedResponse:
       type: object
       required: [jobId, status]
       properties:
-        jobId:
-          type: string
-          format: uuid
+        jobId: { type: string, format: uuid }
         status:
           type: string
-          enum: [PENDING]
-        message:
-          type: string
-          example: Job queued. Poll GET /comics/jobs/{jobId}
+          enum: [RUNNING]
+          description: Job đã được orchestrator nhận
 
-    ComicJobStatusResponse:
+    JobStatusResponse:
       type: object
-      required: [jobId, status, progress]
+      required: [localJob]
       properties:
-        jobId:
+        localJob:
+          $ref: '#/components/schemas/LocalJob'
+        liveStatus:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/LiveStatus' }]
+        error:
           type: string
-          format: uuid
+          description: Chỉ xuất hiện khi be-comic không hỏi được orchestrator
+
+    LocalJob:
+      type: object
+      description: Bản ghi job trong Postgres (field snake_case theo entity)
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        job_type: { type: string, enum: [IMAGE_GENERATION] }
         status:
           type: string
-          enum:
-            - PENDING
-            - STORY_GENERATING
-            - IMAGE_GENERATING
-            - COMPOSING
-            - SUCCESS
-            - FAILED
-            - CANCELLED
-        progress:
-          type: object
-          properties:
-            current:
-              type: integer
-            total:
-              type: integer
-            step:
-              type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED]
+        error_message: { type: string, nullable: true }
+        retry_count: { type: integer }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    LiveStatus:
+      type: object
+      description: Trạng thái thời gian thực từ orchestrator (Redis)
+      properties:
+        jobId: { type: string, format: uuid }
+        status:
+          type: integer
+          description: |
+            Enum số của orchestrator (proto ComicJobStatus):
+            1=PENDING, 2=STORY_GENERATING, 3=STORY_READY,
+            4=IMAGE_GENERATING, 5=COMPOSING, 6=SUCCESS, 7=FAILED, 8=CANCELLED.
+            ⚠️ gRPC lược bỏ giá trị 0 — field vắng mặt nghĩa là 0/UNKNOWN.
+        progressCurrent: { type: integer, description: Số panel đã xong (vắng mặt = 0) }
+        progressTotal: { type: integer }
+        currentStep:
+          type: string
+          example: Generating panel 2/4
         panels:
           type: array
-          items:
-            $ref: '#/components/schemas/PanelResult'
-        pageImageUrl:
-          type: string
-          format: uri
-          nullable: true
-        errorMessage:
-          type: string
-          nullable: true
+          items: { $ref: '#/components/schemas/LivePanel' }
+        pageImageUrl: { type: string, nullable: true }
+        errorMessage: { type: string, nullable: true }
 
-    PanelResult:
+    LivePanel:
       type: object
+      description: Panel trong lúc job đang chạy (từ orchestrator, chưa lưu bền)
       properties:
         index:
           type: integer
-        captionVi:
-          type: string
+          description: ⚠️ gRPC lược giá trị 0 — panel đầu tiên KHÔNG có field này, FE phải hiểu vắng mặt = 0
+        captionVi: { type: string, description: Thoại/lời dẫn tiếng Việt — FE render dưới ảnh }
         imageUrl:
           type: string
           format: uri
-          nullable: true
+          description: Presigned URL MinIO — hết hạn sau 7 ngày, chỉ dùng hiển thị tức thời
+        promptEn: { type: string, description: Prompt ảnh do LLM sinh (debug/hiển thị nâng cao) }
+        seed: { type: integer, description: Seed sinh ảnh — dùng tái sinh đúng panel }
         status:
           type: string
           enum: [PENDING, PROCESSING, SUCCESS, FAILED]
 
-    CancelJobResponse:
+    Frame:
       type: object
+      description: Panel đã lưu bền trong Postgres (bảng COMIC_FRAME, field snake_case)
       properties:
-        jobId:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        order_index: { type: integer, description: Thứ tự panel, bắt đầu từ 0 }
+        caption_vi: { type: string, nullable: true }
+        image_prompt: { type: string, nullable: true }
+        image_url:
           type: string
+          description: |
+            ⚠️ Là MinIO OBJECT KEY (vd "comic-images/comic_abc.jpg"), KHÔNG phải URL
+            mở được trực tiếp. Endpoint cấp presigned URL từ key sẽ bổ sung sau —
+            tạm thời FE dùng imageUrl từ liveStatus khi vừa sinh xong.
+        seed: { type: integer, nullable: true }
         status:
           type: string
-          enum: [CANCELLED]
+          enum: [PENDING, GENERATING, COMPLETED, FAILED]
+        speech_bubbles:
+          type: array
+          description: Bong bóng thoại (phase sau — hiện luôn rỗng)
+          items: { type: object }
 
     ErrorResponse:
       type: object
       properties:
-        code:
-          type: string
         message:
-          type: string
-        requestId:
-          type: string
-
-  responses:
-    BadRequest:
-      description: Invalid input
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    Unauthorized:
-      description: Missing or invalid JWT
-    NotFound:
-      description: Job not found
-    RateLimited:
-      description: Too many requests
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+          description: NestJS ValidationPipe trả mảng message khi lỗi validate
+        error: { type: string, example: Bad Request }
+        statusCode: { type: integer }
