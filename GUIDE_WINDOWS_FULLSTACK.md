@@ -54,14 +54,14 @@ docker ps   # phải thấy 3 container Up
 
 ```bash
 cd ~/ComicSystem/image-ai
-python -m venv env
-source env/Scripts/activate        # Windows venv: Scripts chứ không phải bin
+py -m venv env
+.\env\Scripts\activate        # Windows venv: Scripts chứ không phải bin
 pip install -r requirements.txt    # ~10-15 phút (torch CPU ~200MB + thư viện)
 bash scripts/generate_proto.sh     # biên dịch gRPC stubs
 
 # Chạy worker (TERMINAL 1 — để nguyên chạy):
-export HF_TOKEN=hf_token_cua_ban
-export PYTHONPATH=src
+$env:HF_TOKEN="<YOUR_HUGGINGFACE_TOKEN>"
+$env:PYTHONPATH="src"
 celery -A worker.celery_app:celery_app worker --loglevel=info --concurrency=1 --pool=solo
 ```
 Lần đầu tải model ~4GB rồi warmup. **Chờ đến dòng
@@ -71,8 +71,16 @@ Log phải có `Running on device: cpu` (đúng — máy này không có GPU).
 Mở Git Bash mới (**TERMINAL 2**):
 ```bash
 cd ~/ComicSystem/image-ai && source env/Scripts/activate
+docker compose up -d
 python src/server.py               # gRPC :50051 + health :8000
 ```
+
+New-Item -ItemType Directory -Force -Path src/service/generated
+
+python -m grpc_tools.protoc -Iproto --python_out=src/service/generated --pyi_out=src/service/generated --grpc_python_out=src/service/generated proto/image_generation.proto
+
+(Get-Content src/service/generated/image_generation_pb2_grpc.py) -replace 'import image_generation_pb2', 'from . import image_generation_pb2' | Set-Content src/service/generated/image_generation_pb2_grpc.py
+
 
 ## 5. story-ai (TERMINAL 3)
 
@@ -99,6 +107,7 @@ python src/server.py               # gRPC :50054
 cd ~/ComicSystem/be-comic
 npm install
 npm run migration:run              # dựng schema Postgres
+docker compose up -d
 npm run start:dev                  # HTTP :3000, Swagger tại /docs
 ```
 Log phải in `CORS origins: http://localhost:4200`.
