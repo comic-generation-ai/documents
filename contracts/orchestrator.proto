@@ -46,6 +46,9 @@ message PanelResult {
   int32 seed = 5;
   string status = 6;                // PENDING | PROCESSING | SUCCESS | FAILED
   string error_message = 7;
+  string speaker = 8;                // tên nhân vật nói, hoặc "Người kể chuyện"
+  string panel_type = 9;             // action | dialogue | narration
+  string speaker_position = 10;      // left | center | right
 }
 
 message GetComicJobStatusRequest {

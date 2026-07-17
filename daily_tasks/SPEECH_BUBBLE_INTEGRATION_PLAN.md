@@ -1,158 +1,153 @@
-# Phân tích luồng "chèn thoại" hiện tại & hướng tích hợp bong bóng thoại tối ưu
+# Hướng thực hiện: đặt bong bóng thoại lên ảnh
 
-Ngày: 2026-07-13
+Ngày: 2026-07-16
 
-Rà soát toàn bộ luồng dữ liệu `story-ai → orchestrator-ai → be-comic → fe-comic`
-để trả lời câu hỏi: `image-ai` hiện chỉ vẽ ảnh từ `image_prompt`, vậy lời thoại
-tiếng Việt được xử lý ở đâu, dưới hình thức nào, và vì sao chưa "hợp lý"? Từ đó
-đề xuất hướng tích hợp tối ưu nhất dựa trên hạ tầng đã có sẵn trong repo.
+Mục tiêu: mỗi panel tự động có sẵn bong bóng thoại/caption đặt đúng chỗ khi
+job generate xong, không burn cứng vào ảnh — user chỉ cần kéo chỉnh lại nếu
+muốn, không phải tự thêm từ đầu.
 
----
+**Đã hoàn thành (2026-07-16): `story-ai` giờ bắt buộc mọi panel phải có
+`dialogue`.** Không còn panel nào trả về `dialogue`/`speaker` rỗng — nếu
+panel không có nhân vật nào nói (action/establishing shot), `story-ai` tự
+viết 1 câu dẫn truyện ngắn và gán `speaker = "Người kể chuyện"` thay vì để
+trống. Có 2 lớp:
 
-## 1. Luồng dữ liệu thực tế hiện nay
+- **Lớp chính (prompt):** `story-ai/src/llm/prompt_template.py` — thêm rule
+  "MANDATORY — EVERY PANEL NEEDS TEXT, NO EXCEPTIONS" bắt LLM luôn điền
+  `speaker`+`dialogue`, panel action không có lời thoại tự nhiên thì viết
+  caption dẫn truyện thay vì bỏ trống.
+- **Lớp phòng vệ (validator):** `story-ai/src/llm/parser.py` —
+  `PanelScriptModel._ensure_dialogue_present` (`model_validator` sau khi
+  parse): nếu LLM vẫn lỡ trả `dialogue` rỗng, tự vá `panel_type="narration"`,
+  `speaker="Người kể chuyện"`, `dialogue="Câu chuyện tiếp diễn..."`; nếu có
+  `dialogue` nhưng thiếu `speaker`, tự gán `speaker="Người kể chuyện"`. Đã
+  test bằng tay: panel thiếu cả 2 field được vá đúng, panel có `dialogue`
+  nhưng thiếu `speaker` cũng được vá đúng.
 
-```
-story-ai (LLM)            → sinh panel_type, speaker, dialogue, image_prompt
-                             (prompt_template.py, parser.py)
-        ↓
-orchestrator-ai            → CHỈ giữ lại caption_vi + prompt_en, DROP speaker
-   comic_job.py:24-29         và panel_type (PanelScriptData không có 2 field này)
-        ↓
-image-ai (Celery task)     → generate_image_task() vẽ ảnh từ prompt xong GỌI LUÔN
-   tasks.py:164-168            add_caption_to_comic(image, caption_vi)
-                                → burn cứng 1 hộp caption trắng ở ĐÁY ảnh
-                                  (image_processing.py:79-165), KHÔNG phải bong
-                                  bóng thoại thật: không tail, không phân biệt ai
-                                  nói, không phân biệt narration/dialogue/shout
-        ↓
-be-comic FramesService     → lưu image_url (đã có chữ cháy sẵn trong ảnh),
-   frames.service.ts:23-39    caption_vi, image_prompt, seed vào bảng COMIC_FRAME
-        ↓
-GET /frames?projectId=     → trả Frame[] kèm relation speech_bubbles
-   frames.controller.ts:11    (nhưng bảng này luôn RỖNG — xem mục 2)
-```
-
-### Điểm mấu chốt: hạ tầng bong bóng thoại đã có sẵn nhưng chưa nối dây
-
-- Bảng `COMIC_SPEECH_BUBBLE` (`speech-bubble.entity.ts`) đã được thiết kế đầy đủ:
-  `frame_id`, `text_content`, `bubble_type` (SPEECH/THOUGHT/NARRATION/SHOUT),
-  `pos_x`, `pos_y`, `width`, `height`, `tail_direction`, `style_config` (jsonb).
-- Nhưng `SpeechBubblesService`/`SpeechBubblesController`
-  (`speech-bubbles.service.ts:6-25`) chỉ là code stub do NestJS CLI sinh ra
-  (`create()` trả string `'This action adds a new speechBubble'`...), **không
-  hề được gọi ở đâu trong `saveFromPanels`**. Bảng rỗng vĩnh viễn.
-- Phía `fe-comic`, `WorkspaceComic` + `ComicEditorService`
-  (`workspace-comic.ts`, `comic-editor.service.ts`) đã xây **hoàn chỉnh** một
-  editor bong bóng thoại dạng SVG: kéo/thả, resize, tail, 3 kiểu bubble
-  (round/square/cloud), export canvas 2x (`exportComicAsImage`). Nhưng:
-  - `bubbles: []` luôn khởi tạo rỗng, không đọc dữ liệu từ BE.
-  - Ảnh panel hiện đang là placeholder giả
-    `'https://picsum.photos/seed/comic_panel_' + idx + '/600/400'`
-    (`workspace-comic.html:59`) — **FE còn chưa gọi `GET /frames` để lấy
-    `image_url` thật**, chứ đừng nói tới bubble.
-- `GET /generation-jobs/:id` (qua `liveStatus.panels[]`, xem
-  `generation-jobs.service.ts` + proto `PanelResult`) chỉ trả `index`,
-  `captionVi`, `imageUrl`, `promptEn`, `seed`, `status`, `errorMessage` — không
-  có `speaker`/`panel_type`/toạ độ bubble nào cả, đúng như hệ quả của việc bị
-  drop dữ liệu ở orchestrator.
+Vì vậy, **kể từ `story-ai`, mọi panel luôn có ít nhất 1 trong 2**: thoại
+nhân vật thật, hoặc caption người dẫn truyện — không panel nào hiển thị mà
+không có bong bóng/caption nào cả.
 
 ---
 
-## 2. Vì sao cách hiện tại (burn caption vào ảnh) là hướng sai
+## 1. Phân loại bong bóng cho mỗi panel
 
-1. **Không sửa được nữa** sau khi ảnh đã render — muốn đổi vị trí/nội dung câu
-   thoại phải chạy lại toàn bộ pipeline GPU (tốn tiền, tốn thời gian).
-2. **Luôn chỉ 1 caption ở đáy ảnh** — không phân biệt ai nói, không hỗ trợ
-   nhiều bong bóng/panel, mất hẳn `speaker` và `panel_type` mà story-ai đã sinh
-   ra rất công phu (xem rule trong `prompt_template.py`).
-3. **Đá nhau trực tiếp với editor SVG đã xây ở FE** — editor đó cần ảnh "sạch"
-   (không chữ) để vẽ đè bong bóng vector lên, nhưng ảnh nhận về từ image-ai đã
-   có chữ cháy cứng vào pixel.
+Áp dụng theo đúng thứ tự ưu tiên sau, dựa trên `dialogue`/`caption_vi`,
+`speaker`, `panel_type` mà `story-ai` đã sinh:
 
----
+1. `dialogue` rỗng/`null` → **không tạo bong bóng** cho panel đó. Từ khi
+   `story-ai` bắt buộc mọi panel có `dialogue` (xem trên), nhánh này **chỉ
+   còn là lưới an toàn** cho dữ liệu cũ sinh ra trước khi có ràng buộc này,
+   hoặc khi caller khác gọi thẳng `story-ai` bỏ qua field — không phải
+   luồng bình thường nữa.
+2. Có chữ, và (`panel_type == "narration"` **HOẶC** `speaker` rỗng/`null`
+   **HOẶC** `speaker == "Người kể chuyện"`) → **caption người dẫn truyện**
+   (`bubble_type = NARRATION`), bất kể `panel_type` ghi gì khác (phòng khi
+   LLM gắn nhãn panel sai). Đây là nhánh mà panel action-không-thoại rơi
+   vào sau khi được `story-ai` tự vá.
+3. Còn lại (có chữ + tên nhân vật thật) → **bong bóng thoại nhân vật**
+   (`bubble_type = SPEECH`, hoặc `SHOUT` nếu `panel_type == "action"`).
 
-## 3. Hướng tối ưu đề xuất: structured data + client-side render
+## 2. Vị trí đặt theo từng loại
 
-Ý tưởng cốt lõi: **tách nội dung thoại ra khỏi ảnh nền, giữ ảnh sạch**, để FE
-(đã có sẵn cơ chế) vẽ bong bóng như một lớp vector đè lên ảnh — giống cách các
-tool comic editor chuyên nghiệp (Webtoon, Canva...) làm. Không cố gắng để AI tự
-đoán toạ độ pixel chính xác của miệng nhân vật (gần như không khả thi với ảnh
-Stable Diffusion không có bounding box nhân vật) — thay vào đó dùng vị trí mặc
-định theo heuristic + để người dùng kéo chỉnh tay trong editor đã có sẵn.
+| Phân loại | `speaker_position` | `bubble_type` | `pos_x` | `pos_y` | `width` | `height` | `tail_direction` |
+|---|---|---|---|---|---|---|---|
+| Người dẫn truyện | không dùng | `NARRATION` | 50 | 88 (đáy khung) | 240 | 60 | `none` |
+| Thoại nhân vật | `left` | `SPEECH` | 30 | 18 | 170 | 95 | `down-left` |
+| Thoại nhân vật | `right` | `SPEECH` | 70 | 18 | 170 | 95 | `down-right` |
+| Thoại nhân vật | `center` | `SPEECH` | 30/70 luân phiên theo `panel_number` chẵn/lẻ | 18 | 170 | 95 | khớp `pos_x` |
+| Thoại nhân vật, `panel_type=action` | bất kỳ | `SHOUT` | như dòng trên | 15 | 190 | 100 | khớp `pos_x` |
+| Thoại nhân vật, thiếu `speaker_position` (dữ liệu cũ) | — | `SPEECH` | luân phiên theo `panel_number` | 20 | 160 | 100 | `down` |
 
-### Bước 1 — Ngừng burn caption ở image-ai
+`pos_x/pos_y` theo % kích thước panel. `tail_direction` là chuỗi mô tả
+(`down`, `down-left`, `down-right`, `none`), FE tự quy đổi ra vector px lúc
+render (xem Bước E).
 
-| File | Sửa gì |
-|---|---|
-| `image-ai/src/worker/tasks.py:164-168` | Thêm flag `render_caption: bool` (mặc định `False`) vào request; chỉ gọi `add_caption_to_comic` khi flag bật |
-| proto `image_generation.proto` + `GenerateImageRequest` | Thêm field `render_caption` |
-
-Kết quả: ảnh trả về là panel sạch, không chữ cháy sẵn.
-
-### Bước 2 — Không làm mất dữ liệu ở orchestrator
-
-| File | Sửa gì |
-|---|---|
-| `orchestrator-ai/src/workflow/comic_job.py:24-29` (`PanelScriptData`) | Thêm field `speaker`, `panel_type` |
-| `be-comic/src/proto/orchestrator.proto:41-49` (`PanelResult`) | Thêm field `speaker`, `panel_type` |
-| `orchestrator-ai/src/clients/story_client.py` | Truyền `speaker`/`panel_type` từ response story-ai xuyên suốt tới `PanelResult` |
-
-### Bước 3 — Implement thật `SpeechBubblesService`, nối vào `saveFromPanels`
-
-| File | Sửa gì |
-|---|---|
-| `be-comic/src/module/frames/frames.service.ts:23-39` | Sau khi upsert `Frame`, tạo kèm 1 `SpeechBubble` dựa trên `speaker`/`panel_type`/`dialogue` |
-| `be-comic/src/module/speech-bubbles/speech-bubbles.service.ts` | Implement `create()` thật (insert DB), thay code stub |
-
-Quy tắc map dữ liệu:
-- `bubble_type`: `panel_type = dialogue` → `SPEECH`; `narration` → `NARRATION`;
-  `action` có chữ → `SHOUT`.
-- `pos_x/pos_y/width/height/tail_direction`: heuristic đơn giản, không cần
-  chính xác tuyệt đối — ví dụ narration → dải trên cùng full-width; dialogue →
-  góc dưới trái/phải luân phiên theo thứ tự panel. Người dùng kéo chỉnh lại
-  trong editor là hành vi tự nhiên, không phải bug.
-
-### Bước 4 — FE: nối editor có sẵn vào dữ liệu thật
-
-| File | Sửa gì |
-|---|---|
-| `fe-comic/.../workspace-comic/workspace-comic.html:59` | Thay `picsum.photos` bằng `frame.image_url` thật, lấy qua `GET /frames?projectId=` sau khi job `COMPLETED` |
-| `fe-comic/.../comic-editor.service.ts` | Thêm hàm nạp bubble ban đầu: map `frame.speech_bubbles[]` (format BE) → `SpeechBubble[]` (format FE, đã tương thích ~90% field) rồi `updateState({ bubbles })` thay vì để rỗng |
-
-Kết quả: người dùng mở editor ra đã có sẵn thoại + vị trí gợi ý, chỉ cần tinh
-chỉnh — trải nghiệm tốt hơn hẳn so với phải tự thêm từng bubble từ đầu. Bước
-export ảnh cuối (`exportComicAsImage` trong `workspace-comic.ts`) giữ nguyên
-không đổi — đây chính là bước "burn" cuối cùng, nhưng làm ở client sau khi user
-đã ưng ý, không phải làm cứng một chiều ở server.
-
-### Bước 5 (tuỳ chọn, làm sau) — Lưu lại chỉnh sửa của user
-
-| File | Sửa gì |
-|---|---|
-| `be-comic/src/module/speech-bubbles/speech-bubbles.service.ts` | Implement nốt `update()` |
-| `be-comic/src/module/speech-bubbles/speech-bubbles.controller.ts` | Đảm bảo route `PATCH /speech-bubbles/:id` hoạt động, FE gọi khi user chỉnh xong |
-
-Tránh mất chỉnh sửa của user khi F5/tải lại trang.
+`speaker_position` (`left|center|right`) là field mới, story-ai phải sinh
+thêm — xem Bước A. Không cần AI đoán toạ độ pixel: chỉ cần biết nhân vật
+đang nói đứng bên nào của khung để đặt bong bóng cùng phía, lệch lên trên.
 
 ---
 
-## 4. Vì sao hướng này tối ưu
+## 3. Các bước sửa code
 
-- Tận dụng gần như 100% hạ tầng đã tồn tại (entity, migration, SVG editor) —
-  việc chính là **nối dây**, không phải xây mới từ đầu.
-- Thoại luôn sửa được, không tốn GPU render lại mỗi lần đổi chữ/vị trí.
-- Giữ được đầy đủ ngữ nghĩa story-ai đã sinh (speaker, loại panel) thay vì đánh
-  rơi giữa đường ở orchestrator như hiện tại.
-- Tránh bài toán khó "AI tự đặt bong bóng đúng vị trí miệng nhân vật trong ảnh
-  AI-generated" — gần như không giải được đáng tin cậy ở giai đoạn hiện tại;
-  thay vào đó dùng heuristic + con người chỉnh tay, đúng với UX editor đã thiết
-  kế sẵn ở FE.
+### Bước A — `story-ai`: sinh thêm field `speaker_position`
 
-## 5. Thứ tự triển khai đề xuất
+Phần bắt buộc `dialogue`/`speaker` không rỗng **đã xong** (xem mục "Đã hoàn
+thành" ở đầu file). Còn lại trong Bước A chỉ là thêm `speaker_position`:
 
-1. Bước 4 trước (ít rủi ro nhất, hiển thị được ảnh thật ngay trên editor).
-2. Bước 1 (ngừng burn caption) — cần làm trước hoặc song song bước 3 để ảnh sạch.
-3. Bước 2 + 3 (giữ + lưu speaker/panel_type/bubble) — cần sửa cả 3 service
-   (story/orchestrator/be-comic), rủi ro cao nhất, nên làm sau khi đã xác nhận
-   FE hiển thị đúng ảnh thật.
-4. Bước 5 (lưu chỉnh sửa) — làm sau cùng, không chặn luồng chính.
+| File | Sửa gì |
+|---|---|
+| `story-ai/src/llm/prompt_template.py:6-18` (JSON schema) | Thêm `"speaker_position": "left \| center \| right"` vào schema mỗi panel — giá trị phải khớp vị trí đã mô tả trong `image_prompt` (rule SPATIAL POSITION, dòng 63-68) |
+| `story-ai/src/server.py:67-72` (`PanelScript`) | Thêm `speaker_position: Optional[Literal["left","center","right"]] = "center"` |
+| `story-ai/src/server.py:97-122` (`_get_mock_fallback`) | Thêm `speaker_position="center"` vào từng `PanelScript(...)` mock |
+| `story-ai/src/llm/parser.py:16-21` (`PanelScriptModel`) | Thêm cùng field `speaker_position: Optional[Literal["left","center","right"]] = "center"` (model validate response LLM thật) — đặt trước `_ensure_dialogue_present` không ảnh hưởng gì vì 2 validator độc lập field |
+| `story-ai/src/llm/parser.py` (thêm `field_validator` mới cho `speaker_position`) | **Bắt buộc, không được bỏ qua**: `Literal["left","center","right"]` chỉ chấp nhận đúng 3 giá trị này — nếu LLM lỡ trả `"top"`, `"middle"`, `""`, hoặc bất kỳ chuỗi nào khác, Pydantic sẽ raise `ValidationError` ngay (default `"center"` **không** cứu được trường hợp field có mặt nhưng sai giá trị, chỉ áp dụng khi field vắng mặt hoàn toàn) → làm hỏng toàn bộ response chỉ vì 1 field phụ. Phải thêm `@field_validator('speaker_position', mode='before')` để chuẩn hoá **trước khi** Pydantic validate kiểu `Literal`:<br>`python`<br>`@field_validator('speaker_position', mode='before')`<br>`@classmethod`<br>`def _normalize_position(cls, v):`<br>`    if isinstance(v, str) and v.strip().lower() in ("left", "right", "center"):`<br>`        return v.strip().lower()`<br>`    return "center"`<br>Cùng pattern phòng vệ như `_ensure_dialogue_present` đã làm với `dialogue` — không để 1 field LLM trả sai làm fail cả job |
+
+### Bước B — `orchestrator-ai`: giữ `speaker`/`panel_type`, thêm `speaker_position`
+
+| File | Sửa gì |
+|---|---|
+| `orchestrator-ai/src/clients/story_client.py:11-17` (`StoryPanelResult`) | Thêm `panel_type: str = "dialogue"`, `speaker_position: str = "center"` |
+| `orchestrator-ai/src/clients/story_client.py:73-81` | Thêm `panel_type=raw_panel.get("panel_type") or "dialogue"`, `speaker_position=raw_panel.get("speaker_position") or "center"` |
+| `orchestrator-ai/src/workflow/comic_job.py:24-28` (`PanelScriptData`) | Thêm `speaker: str = ""`, `panel_type: str = "dialogue"`, `speaker_position: str = "center"` |
+| `orchestrator-ai/src/workflow/comic_job.py:214-222` | Truyền thêm `speaker=p.speaker, panel_type=p.panel_type, speaker_position=p.speaker_position` vào `PanelScriptData(...)` |
+| `orchestrator-ai/src/workflow/comic_job.py:113-122` (`_empty_panel_dict`) | Thêm 3 field trên vào dict trả về |
+| `orchestrator-ai/src/workflow/comic_job.py:99-109` (build `orchestrator_pb2.PanelResult(...)`) | Thêm `speaker=panel.get("speaker", ""), panel_type=panel.get("panel_type", ""), speaker_position=panel.get("speaker_position", "center")` |
+
+### Bước C — proto: mở rộng `PanelResult` (field 8-10)
+
+| File | Sửa gì |
+|---|---|
+| `orchestrator-ai/proto/orchestrator.proto:41-49` | Thêm `string speaker = 8; string panel_type = 9; string speaker_position = 10;` vào `message PanelResult` |
+| `be-comic/src/proto/orchestrator.proto:41-49` | Y hệt (đồng bộ tay 2 file, xem `documents/scripts/check-contracts-sync.sh`) |
+| `documents/contracts/orchestrator.proto` | Đồng bộ luôn |
+| Cả 2 phía | Chạy lại `generate_proto.sh` tương ứng |
+
+### Bước D — `be-comic`: implement thật `SpeechBubblesService`, tự tạo bubble khi lưu frame
+
+| File | Sửa gì |
+|---|---|
+| `be-comic/src/module/generation-jobs/dto/panel.dto.ts` | Thêm `speaker?: string; panelType?: string; speakerPosition?: string;` |
+| `be-comic/src/module/frames/frames.service.ts:34-50` (`saveFromPanels`) | **KHÔNG dùng `speechBubbleRepo.upsert(..., ['frame_id'])`** — xem cảnh báo bug ngay dưới bảng này. Sau khi `upsert` `Frame`: (1) lấy lại `frame` vừa upsert (`findOne({ where: { project_id: projectId, order_index: p.index ?? 0 } })`), (2) `speechBubbleRepo.delete({ frame_id: frame.id })` để dọn bong bóng auto-generate cũ (phòng khi job chạy lại/regenerate), (3) phân loại theo mục 1, (4) tính layout theo bảng mục 2 bằng 1 hàm thuần `computeBubbleLayout(classification, speakerPosition, panelNumber)`, (5) `speechBubbleRepo.save({ frame_id: frame.id, text_content: p.captionVi, ...layout })` (insert mới, không upsert) |
+| `be-comic/src/module/speech-bubbles/speech-bubbles.service.ts` | Implement thật `create()`/`findAll()`/`findOne()`/`update()` bằng `Repository<SpeechBubble>` (`@InjectRepository`), xoá code stub NestJS CLI |
+
+> ⚠️ **Bug nghiêm trọng nếu làm theo bản nháp trước của Bước D**: `COMIC_SPEECH_BUBBLE`
+> chỉ có `PRIMARY KEY(id)` — **không có `UNIQUE`/index nào trên `frame_id`**
+> (xác nhận trong migration `be-comic/src/db/migrations/1781493480257-InitialSchema.ts`,
+> dòng `CREATE TABLE "COMIC_SPEECH_BUBBLE" (...)`, chỉ có
+> `CONSTRAINT "PK_..." PRIMARY KEY ("id")`). Gọi
+> `repo.upsert({...}, ['frame_id'])` khiến TypeORM sinh
+> `ON CONFLICT ("frame_id") DO UPDATE...`, Postgres sẽ throw lỗi
+> **`there is no unique or exclusion constraint matching the ON CONFLICT specification`**
+> ngay khi `saveFromPanels` chạy → **crash toàn bộ bước lưu frame sau mỗi job**.
+> Cách sửa đúng: dùng `delete` + `save` (insert mới) như bảng trên, **không**
+> `upsert` theo `frame_id` trừ khi làm thêm 1 migration mới thêm
+> `@Unique(['frame_id'])` vào `SpeechBubble` entity (không cần thiết — 1 frame
+> vẫn có thể có nhiều bong bóng do user tự thêm tay ở FE, nên ràng buộc unique
+> theo `frame_id` là sai bản chất dữ liệu).
+
+### Bước E — `fe-comic`: nạp bubble từ BE vào editor
+
+| File | Sửa gì |
+|---|---|
+| `fe-comic/src/app/core/api/frames-api.service.ts` (`FrameDto`, dòng 6-16) | Thêm field `speech_bubbles?: SpeechBubbleDto[];` vào interface (hiện interface này hoàn toàn chưa có field này — cần để TS compile được khi `hydrateBubblesFromFrames` đọc `frame.speech_bubbles`). Định nghĩa thêm `SpeechBubbleDto` khớp entity BE: `{ id: string; frame_id: string; text_content: string; bubble_type: 'SPEECH'\|'THOUGHT'\|'NARRATION'\|'SHOUT'; pos_x: number; pos_y: number; width: number; height: number; tail_direction: string \| null; style_config: Record<string, any>; }` |
+| `fe-comic/.../comic-editor.service.ts` (`SpeechBubble` interface, dòng 4-20) | Thêm field tuỳ chọn `hasTail?: boolean` (mặc định `true`) — cần cho `NARRATION` (không đuôi) |
+| `fe-comic/.../comic-editor.service.ts` | Thêm hàm `hydrateBubblesFromFrames(frames: FrameDto[])`: map `frame.speech_bubbles[]` (BE) → `SpeechBubble[]` (FE), 2 quy tắc: `bubble_type → type` (`SPEECH→'round'`, `THOUGHT→'cloud'`, `NARRATION→'square'`, `SHOUT→'square'`) và `tail_direction → tailX/tailY` bằng hàm quy đổi theo `width/height` bubble, ví dụ:<br>`down-left → {x:-0.25*w, y:0.6*h}`, `down-right → {x:0.25*w, y:0.6*h}`, `down → {x:0, y:0.65*h}`, `none → hasTail:false`.<br>Gán `panelIndex = frame.order_index`, gọi `updateState({ bubbles })` |
+| `fe-comic/.../workspace-comic.ts` (`getTailPoints` dòng 251-269, `getTailStroke` dòng 271-289) | Trả `''` (không vẽ path đuôi) khi `b.hasTail === false` — nhưng **chỉ đủ cho `type='round'\|'square'`**, xem dòng dưới cho `type='cloud'` |
+| `fe-comic/.../workspace-comic.html` (khối `<g class="cloud-tail">`, dòng 153-160) | Đuôi kiểu `cloud` KHÔNG đi qua `getTailPoints`/`getTailStroke` — nó là 3 `<circle>` vẽ trực tiếp từ `bubble.tailX/tailY`. Phải tự bọc thêm `@if (bubble.hasTail !== false)` quanh khối `<g class="cloud-tail">` này, nếu không bong bóng `NARRATION` dạng cloud vẫn hiện đuôi dù đã set `hasTail: false` |
+| `fe-comic/.../workspace-comic.html` (khối `<g class="tail-handle-group">`, dòng 196-199) | Núm kéo đuôi trong `selection-handles` cũng cần bọc `@if (bubble.hasTail !== false)` — nếu không, chọn 1 bong bóng `NARRATION` (không đuôi) vẫn thấy 1 núm tròn lơ lửng ở giữa bubble (do `tailX/tailY = 0` mặc định) kéo được nhưng không có tác dụng gì, gây khó hiểu cho user |
+| `fe-comic/.../workspace-comic.ts` (`exportComicAsImage`, khối vẽ đuôi dòng 411-430 và 486-515) | Thêm điều kiện `b.hasTail !== false` trước khi vẽ tam giác đuôi trên canvas export (áp dụng cho cả nhánh `cloud` — khối vẽ 3 vòng tròn đuôi mây dòng ~470-483 — không chỉ nhánh `round`/`square`) |
+| `fe-comic/src/app/features/comic-editor/editor-comic/editor-comic.html` (khu vực hiện có `selectedBubble` controls, gần dòng 158-260) | *Đề xuất thêm, không bắt buộc để chạy được nhưng cần cho UX chỉnh sửa*: thêm 1 checkbox dùng đúng pattern `updateSelectedBubble({...})` đã có sẵn trong file này (vd dòng 227-236 dùng cho `textAlign`), để user tự bật/tắt đuôi cho bong bóng đang chọn — vì heuristic tự động có thể đặt sai loại (VD: muốn đổi 1 `SPEECH` do AI tạo thành caption không đuôi), mà hiện sidebar chỉ có nút đổi hình dạng (`round`/`square`/`cloud`) và sửa chữ, không có cách nào bật/tắt đuôi thủ công:<br>`<input type="checkbox" [ngModel]="selectedBubble?.hasTail !== false" (ngModelChange)="updateSelectedBubble({ hasTail: $event })" />` |
+| `fe-comic/.../comic-editor-page.ts` — lưu `activeProjectId` | `generateComic()` (dòng 194-209): trong `switchMap((project) => ...)`, project object đã có sẵn `project.id` nhưng hiện không được lưu lại — thêm gán `this.activeProjectId = project.id;` (field mới của component) trước khi gọi `createComicJob` |
+| `fe-comic/.../comic-editor-page.ts` — `handleJobStatus` (dòng 261-290) | Trong `switch (res.localJob.status)`, case `'COMPLETED'` (dòng 273): sau khi set `isGenerating = false`, gọi thêm `this.framesApi.getFramesByProject(this.activeProjectId).subscribe(frames => this.editorService.hydrateBubblesFromFrames(frames))` |
+| `fe-comic/.../comic-editor-page.ts` — `loadExistingProject` (dòng 86-152) | `frames` đã được fetch sẵn ở dòng 92 (`forkJoin({ project, frames: this.framesApi.getFramesByProject(projectId) })`) nhưng hiện tại callback `next:` (dòng 110-143) chỉ map `frames` thành `panels[]` (ảnh/caption), **bỏ qua hoàn toàn `speech_bubbles`**. Ngay sau `this.editorService.reset()` (dòng 125), gọi thêm `this.editorService.hydrateBubblesFromFrames(frames)` — dùng lại đúng biến `frames` đã có trong closure, không cần gọi API lần 2. Đồng thời gán `this.activeProjectId = projectId;` ở đây luôn (để nhất quán, phòng khi user generate tiếp/regenerate sau khi mở lại project cũ) |
+
+---
+
+## 4. Thứ tự triển khai
+
+1. **Bước A** (story-ai) — field optional, test độc lập bằng `story-ai/test_run.py`.
+2. **Bước B + C** (orchestrator + proto) — làm cùng lúc vì cần generate lại code gRPC 2 phía; verify bằng `grpcurl` gọi `GetComicJobStatus` xem `speaker_position` có trả về không.
+3. **Bước D** (be-comic) — verify bằng `GET /frames?projectId=` thấy `speech_bubbles[]` có dữ liệu sau khi 1 job chạy xong.
+4. **Bước E** (fe-comic) — verify bằng mắt: mở trang truyện vừa generate, bong bóng tự nằm đúng phía nhân vật nói, caption người dẫn truyện nằm ở đáy khung.
