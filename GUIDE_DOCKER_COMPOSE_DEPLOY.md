@@ -55,6 +55,14 @@ thuê GPU, hoặc dev không có GPU rời.
 `image-ai/.env` nên để khối **`[A]` (dev Mac)** hoặc **`[C]` (CPU laptop)** đang
 active — khối `[D]` (GPU non-turbo, 25-30 steps) sẽ rất chậm trên CPU.
 
+Container `image-ai` bind-mount thẳng `image-ai/.cache` của máy host (xem
+`deployment/docker-compose.yml`) thay vì tải mới vào volume trống — nếu đã
+từng dev bằng `venv` trên máy này trước đó, model đã tải sẵn sẽ được tái dùng
+luôn, không tải lại vài GB. Máy mới toanh (chưa dev venv lần nào) thì vẫn phải
+tải lần đầu như bình thường, chỉ là **lần sau** (kể cả `docker compose down`
+rồi `up` lại, hay chuyển qua chạy `venv` tay) sẽ không phải tải lại nữa vì
+chung 1 thư mục cache trên đĩa.
+
 ```bash
 cd ~/ComicSystem/deployment
 docker compose up -d --build
